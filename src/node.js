@@ -9,8 +9,6 @@ const announcements = 'QmTPwaRX54sP3AGUBtk7vcY2sa6Qjhruhu1sF6P4Jg8Emp'
 
 /// IPFS node is ready, so we can start using ipfs-pubsub-room
 ipfs.on('ready', () => {
-  var myid = '' 
-
 
   ipfs.id().then( (x) => {
     const room = Room(ipfs, announcements)
@@ -36,6 +34,8 @@ ipfs.on('ready', () => {
          var n = 10
 
          manager.announce(
+           /*id*/
+           'my-accouncement',
            /*announcement*/
            {type: 'execution'},
            /* fulfillment */
@@ -118,8 +118,11 @@ class Manager {
       case 'accept': 
         this.handleAccept(from, message.payload)
         break
-      case 'io':
-        this.handleIO(from, message.payload) 
+      case 'io-in':
+        this.handleIOin(from, message.payload) 
+        break
+     case 'io-out':
+        this.handleIOout(from, message.payload) 
         break
       default:
         this.warn(`ignored unhandeled message of type ${message.type} from ${from}`)
@@ -221,7 +224,38 @@ class Manager {
 
   }
 
-  handleIO(from, reply) {
+  handleIOin(from, reply) {
+
+    if(!reply) {
+      return 
+    }
+    if(!reply.re) {
+      return
+    }
+
+    const a = this.announcements[reply.re] 
+
+    if(a) {
+
+      if(!a.offers) {
+        return
+      } else  if(!a.offers[from]) {
+        return
+      } else if(a.callback)  {
+        // set up bi-com here by passing a reply channel to the callback
+        if(!a.reply)
+          a.reply = ((data) => {
+            this.sendTo(from, new Message('io-out',{
+              re: reply.re,
+              data: data 
+            }))
+          }).bind(this) 
+        a.callback(reply.error, reply.data, a.reply)
+      }
+    } 
+  }
+  
+  handleIOout(from, reply) {
 
     if(!reply) {
       return 
@@ -233,52 +267,26 @@ class Manager {
     var a = this.receivedAnnouncements[reply.re] 
 
     if(a) {
+
       if(!a.offer) {
         // did not send any offer??
        return
-      }
-
-      if(!a.offer.worker) {
+      } else if(!a.offer.worker) {
         // suspicious
         return
-      }
-      
-      a.offer.worker.postMessage(reply.data) // deliver
-
-    } else {
-      a = this.announcements[reply.re] 
-
-      if(!a) {
-        return
+      } else {
+        a.offer.worker.postMessage(reply.data) // deliver
       }
 
-      if(!a.offers) {
-        return
-      }
-
-      if(!a.offers[from]) {
-        return
-      } 
-
-      if(a.callback)  {
-        // set up bi-com here by passing a reply channel to the callback
-        if(!a.reply)
-          a.reply = ((data) => {
-            this.sendTo(from, new Message('io',{
-              re: reply.re,
-              data: data 
-            }))
-          }).bind(this) 
-        a.callback(reply.error, reply.data, a.reply)
-      }
-    } 
-    
+    }  
   }
   
 
-  announce(ann, fulfillment, cb) {
+  announce(id, ann, fulfillment, cb) {
+
+  
     const announcement = {
-      id: this.id + '-' + Math.random(),
+      id: (id?id: (this.id + '-' + Math.random())),
       payload: ann
     }
 
@@ -327,28 +335,33 @@ class Manager {
        * javascript fulfillment request
        * starts a webworker with the provided code (INSECURE) and
        * connects the workers messagins with the origin of the 
-       * fulfillment request
+       * fulfillment request.
+       * 
+       * if the request is for a 'service', the webworker needs to support 
+       * a special protocol, that allows to communicate via the 
+       * announcement channel and with each node individually.  
        */
       if(reply.fulfillment.javascript) {
         try {
           /*
-          * INSECURE! 
-          */
+           * INSECURE! 
+           */
           const blobURL = window.URL.createObjectURL(new Blob([reply.fulfillment.javascript]));
-
 
           this.warn(`creating webworker with url ${blobURL}`)
 
           const worker = new Worker(blobURL);
+
+          // pass back messages
           worker.onmessage = function(e) {            
-            this.sendTo(from, new Message('io', {
+            this.sendTo(from, new Message('io-in', {
               re: reply.re,              
               data: e.data
             }))
           }.bind(this);
-
+          // pass back errors
           worker.onerror = function(error) {
-            this.sendTo(from, new Message('io',{
+            this.sendTo(from, new Message('io-in',{
               re: reply.re,
               error: error.message
             }))
