@@ -124,7 +124,7 @@ class Manager {
         this.handleIOout(from, message.payload) 
         break
       default:
-        this.warn(`ignored unhandeled message of type ${message.type} from ${from}`)
+        this.warn(`ignored unhandled message of type ${message.type} from ${from}`)
         break
     }
   }
@@ -343,7 +343,6 @@ class Manager {
    */ 
   createOfferWatcher(announcement, offer, options) {
     // from is the sender, 
-    // announcement the LOCAL instance of the initial announcement
     // reply the just received reply
     return ((from, reply) => {
       this.log(`offer ${offer.re} accepted by ${from} with reply ${JSON.stringify(reply)}`)
@@ -351,6 +350,7 @@ class Manager {
       if(!reply.fulfillment) {
         return
       }
+
 
       /**
        * javascript fulfillment request
@@ -390,6 +390,20 @@ class Manager {
  * if the request is for a 'service', the webworker needs to support 
  * a special protocol, that allows to communicate via the 
  * announcement channel and with each node individually.  
+ * 
+ * messages from and to the fulfillment instance need to be intercepted, 
+ * if the fulfillment (and announcement) require so:
+ * 
+ * for 'service' operations messages of the following type will be handled
+ * by the controlling instance:
+ * 
+ *  <- 'announce' goes to local announcement-method 
+ *  -> 'offer'    comes from locally received offer
+ *  <- 'accept'   goes to the origin of an offer
+ *  -> 'res'      comes from a remote fulfilling instance     
+ *  <- 'req'      goes to a remote fulfilling instance
+ * 
+ * 
  */
 class JavascriptFulfillment {
 
