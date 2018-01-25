@@ -118,10 +118,10 @@ class Manager {
       case 'accept': 
         this.handleAccept(from, message.payload)
         break
-      case 'io-in':
+      case 'in':
         this.handleIOin(from, message.payload) 
         break
-     case 'io-out':
+     case 'out':
         this.handleIOout(from, message.payload) 
         break
       default:
@@ -156,7 +156,7 @@ class Manager {
     // what can we offer? 
     const offer = {
       re: announcement.id,
-      prize: 0
+    //  prize: 0
     }
 
     this.receivedAnnouncements[announcement.id] = {
@@ -172,7 +172,7 @@ class Manager {
 
   handleOffer(from, offer) {
 
-    if(!offer) {
+    if(!offer) { 
       return 
     }
     if(!offer.re) {
@@ -245,7 +245,7 @@ class Manager {
         // set up bi-com here by passing a reply channel to the callback
         if(!a.reply)
           a.reply = ((data) => {
-            this.sendTo(from, new Message('io-out',{
+            this.sendTo(from, new Message('out',{
               re: reply.re,
               data: data 
             }))
@@ -354,14 +354,14 @@ class Manager {
 
           // pass back messages
           worker.onmessage = function(e) {            
-            this.sendTo(from, new Message('io-in', {
+            this.sendTo(from, new Message('in', {
               re: reply.re,              
               data: e.data
             }))
           }.bind(this);
           // pass back errors
           worker.onerror = function(error) {
-            this.sendTo(from, new Message('io-in',{
+            this.sendTo(from, new Message('in',{
               re: reply.re,
               error: error.message
             }))
