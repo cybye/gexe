@@ -33,9 +33,10 @@ ipfs.on('ready', () => {
          var time = Date.now()
          var n = 10
 
+        // post({type: announce, { id: 'my-announcement', type:'service', fulfillment: { jscript: ... }}})
          manager.announce(
            /*id*/
-           'my-accouncement',
+           'my-execution-request',
            /*announcement*/
            {type: 'execution'},
            /* fulfillment */
@@ -82,7 +83,6 @@ class Message {
   
 class Manager {
 
-
   constructor(id, broadcast, sendTo) {
     this.id = id
     this._broadcast = broadcast
@@ -97,7 +97,6 @@ class Manager {
     this.trace = console.log
     this.log = console.log
     this.warn = console.warn
-
   }
 
   receive(from, data) {
@@ -118,10 +117,10 @@ class Manager {
       case 'accept': 
         this.handleAccept(from, message.payload)
         break
-      case 'in':
+      case 'res':
         this.handleIOin(from, message.payload) 
         break
-     case 'out':
+     case 'req':
         this.handleIOout(from, message.payload) 
         break
       default:
@@ -167,7 +166,8 @@ class Manager {
     // send offer to sender
     this.sendTo(from, new Message('offer', offer))
 
-    offer.listener = this.createOfferWatcher(offer)  
+    // and then ;) 
+    offer.listener = this.createOfferWatcher(announcement, offer)  
   }
 
   handleOffer(from, offer) {
@@ -188,13 +188,15 @@ class Manager {
       return
     }
 
-    if(a.offers[from]) {
-      // double offer
+    if(!a.listener) {
+      // internal error
+      return
     }
-
-    a.offers[from] = offer
+    // inform the listener, i.e. the app about the new offer
+    // the app can trigger accepts then
     a.listener(from, offer)
   }
+
 
   handleAccept(from, reply) {
 
@@ -237,6 +239,10 @@ class Manager {
 
     if(a) {
 
+      // TODO: are these offers really required? or is it better to provide a list of 
+      // accepted offers .. 
+      // callback and and 'reply' connector are sufficient on the controller side
+      // TODO: security checks! 
       if(!a.offers) {
         return
       } else  if(!a.offers[from]) {
@@ -245,7 +251,7 @@ class Manager {
         // set up bi-com here by passing a reply channel to the callback
         if(!a.reply)
           a.reply = ((data) => {
-            this.sendTo(from, new Message('out',{
+            this.sendTo(from, new Message('req',{
               re: reply.re,
               data: data 
             }))
@@ -264,27 +270,28 @@ class Manager {
       return
     }
 
-    var a = this.receivedAnnouncements[reply.re] 
+    const a = this.receivedAnnouncements[reply.re] 
 
     if(a) {
 
       if(!a.offer) {
         // did not send any offer??
        return
-      } else if(!a.offer.worker) {
+      } else if(!a.offer.fulfillment) {
         // suspicious
         return
       } else {
-        a.offer.worker.postMessage(reply.data) // deliver
+        a.offer.fulfillment.send(reply.data) // deliver
       }
 
     }  
   }
   
-
+  /**
+   * announce 
+   */
   announce(id, ann, fulfillment, cb) {
 
-  
     const announcement = {
       id: (id?id: (this.id + '-' + Math.random())),
       payload: ann
@@ -296,7 +303,7 @@ class Manager {
     this._broadcast(new Message('announcement', announcement).serialize()) 
 
     // fill in local slots
-    announcement.offers = {}
+    announcement.offers = {} // TODO are offers on the controller side (framework) required?
     announcement.listener = this.createAnnouncementWatcher(announcement, {/*options*/}) 
     announcement.callback = cb // will be called with data and sender information
     announcement.fulfillment = fulfillment
@@ -308,6 +315,17 @@ class Manager {
    */
   createAnnouncementWatcher(announcement, options) {
     return ((from, offer) => {
+      /**
+       * dummy, that accepts the first offer it gets
+       */
+
+       // TODO: are offers on the controller-side (framework) required?
+      if(announcement.offers[from]) {
+        // double offer
+        return  
+      }
+      announcement.offers[from] = offer
+
       this.log(`received offer ${offer.re} from ${from}`)
       // immediately accept for now
       this.sendTo(from, new Message('accept', {
@@ -323,7 +341,10 @@ class Manager {
    * the message may contain additional information about the 
    * fulfillment, i.e. actual work to do.
    */ 
-  createOfferWatcher(offer, options) {
+  createOfferWatcher(announcement, offer, options) {
+    // from is the sender, 
+    // announcement the LOCAL instance of the initial announcement
+    // reply the just received reply
     return ((from, reply) => {
       this.log(`offer ${offer.re} accepted by ${from} with reply ${JSON.stringify(reply)}`)
       // 
@@ -333,42 +354,19 @@ class Manager {
 
       /**
        * javascript fulfillment request
-       * starts a webworker with the provided code (INSECURE) and
-       * connects the workers messagins with the origin of the 
-       * fulfillment request.
-       * 
+       *
        * if the request is for a 'service', the webworker needs to support 
        * a special protocol, that allows to communicate via the 
        * announcement channel and with each node individually.  
        */
       if(reply.fulfillment.javascript) {
         try {
-          /*
-           * INSECURE! 
-           */
-          const blobURL = window.URL.createObjectURL(new Blob([reply.fulfillment.javascript]));
 
-          this.warn(`creating webworker with url ${blobURL}`)
+          offer.fulfillment = new JavascriptFulfillment(
+            reply.re, 
+            reply.fulfillment.javascript, 
+            (m) => this.sendTo(from,m))
 
-          const worker = new Worker(blobURL);
-
-          // pass back messages
-          worker.onmessage = function(e) {            
-            this.sendTo(from, new Message('in', {
-              re: reply.re,              
-              data: e.data
-            }))
-          }.bind(this);
-          // pass back errors
-          worker.onerror = function(error) {
-            this.sendTo(from, new Message('in',{
-              re: reply.re,
-              error: error.message
-            }))
-            throw error; // rsp terminate this worker etc
-          }.bind(this);
-      
-          offer.worker = worker
         } catch (e) {
           this.warn('Error during code execution',e)
         }
@@ -383,3 +381,47 @@ class Manager {
   }
 }
 
+/**
+ * javascript fulfillment request
+ * starts a webworker with the provided code (INSECURE) and
+ * connects the workers messagins with the origin of the 
+ * fulfillment request.
+ * 
+ * if the request is for a 'service', the webworker needs to support 
+ * a special protocol, that allows to communicate via the 
+ * announcement channel and with each node individually.  
+ */
+class JavascriptFulfillment {
+
+    constructor(re, jscript, reply) {
+      /*
+       * INSECURE! 
+       */
+      const blobURL = window.URL.createObjectURL(new Blob([jscript]));
+
+      console.warn(`creating INSECURE webworker with url ${blobURL}`)
+
+      this.worker = new Worker(blobURL);
+
+      // pass back messages
+      this.worker.onmessage = function(e) {            
+        reply(new Message('res', {
+          re: re,              
+          data: e.data
+        }))
+      }
+      // pass back errors
+      this.worker.onerror = function(error) {
+        reply(new Message('res',{
+          re: re,
+          error: error.message
+        }))
+        throw error // rsp terminate this worker etc
+      }
+    }
+
+    send(x) {
+      this.worker.postMessage(x)
+    }
+
+}
